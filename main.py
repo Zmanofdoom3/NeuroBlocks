@@ -161,6 +161,7 @@ def draw_background():
         pygame.draw.circle(screen, (col,col,255), (x, y), r)
 
 def main():
+    global floating_texts, _color_cycle_t
     grid = [[0]*GRID_WIDTH for _ in range(GRID_HEIGHT)]
     # next piece system
     next_idx = random.randint(0, len(SHAPES)-1)
