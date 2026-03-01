@@ -2,6 +2,7 @@ import pygame
 import random
 import time
 import math
+import numpy as np
 from settings import *
 from bci_engine import BCIEngine
 
@@ -160,6 +161,46 @@ def draw_background():
         r = max(1, int(s["r"]*tw))
         pygame.draw.circle(screen, (col,col,255), (x, y), r)
 
+# helper: simple procedural tone for clears (no external assets)
+def play_clear_tone(cleared):
+    try:
+        if not pygame.mixer.get_init():
+            pygame.mixer.init(frequency=44100, size=-16, channels=1)
+    except Exception:
+        return
+    # base freq rises with cleared count
+    freq = 440 + cleared*110
+    sr = 44100
+    length = 0.28
+    t = np.linspace(0, length, int(sr*length), False)
+    wave = 0.5 * np.sin(2 * np.pi * freq * t) * np.exp(-3*t)  # pluck-like
+    # add second harmonic
+    wave += 0.25 * np.sin(2 * np.pi * (freq*2) * t) * np.exp(-6*t)
+    # convert to 16-bit
+    audio = np.int16(wave * 32767)
+    try:
+        sound = pygame.sndarray.make_sound(audio)
+        sound.play()
+    except Exception:
+        pass
+
+# helper: build scanline surface once
+def make_scanlines(width, height, spacing=3):
+    surf = pygame.Surface((width, height), pygame.SRCALPHA)
+    for y in range(0, height, spacing):
+        pygame.draw.line(surf, (0,0,0,40), (0,y), (width,y))
+    return surf
+
+# helper: additive bloom pass (cheap)
+def bloom_blit(target, src, strength=0.18):
+    w,h = src.get_size()
+    # upscale-smudge technique
+    up = pygame.transform.smoothscale(src, (w*2, h*2))
+    blur = pygame.transform.smoothscale(up, (w, h))
+    tmp = blur.copy()
+    tmp.set_alpha(int(255*strength))
+    target.blit(tmp, (0,0), special_flags=pygame.BLEND_ADD)
+
 def main():
     global floating_texts, _color_cycle_t
     grid = [[0]*GRID_WIDTH for _ in range(GRID_HEIGHT)]
@@ -169,9 +210,20 @@ def main():
     next_idx = random.randint(0, len(SHAPES)-1)
     next_piece = Piece(idx=next_idx)
 
+    # render-to-surface for bloom & shake
+    scene_w = GRID_WIDTH * BLOCK_SIZE
+    scene_h = SCREEN_HEIGHT
+    scene_surf = pygame.Surface((scene_w, scene_h)).convert_alpha()
+    scan_surf = make_scanlines(scene_w, scene_h, spacing=3)
+
     drop_timer = time.time()
     drop_speed = BASE_DROP_SPEED
     score = 0
+
+    # combo + shake
+    combo = 0
+    last_clear_time = 0.0
+    screen_shake = 0.0
 
     # input DAS/ARR state
     left_held = False
@@ -189,8 +241,26 @@ def main():
         now = time.time()
         clock.tick(FPS)
 
-        # background
-        draw_background()
+        # update global visuals timer
+        dt_frame = clock.get_time() / 1000.0
+        _color_cycle_t += dt_frame
+
+        # clear scene surface (draw background into scene)
+        scene_surf.fill((0,0,0,0))
+        # draw background gradient onto scene_surf (reuse previous draw_background logic)
+        for i in range(scene_h):
+            t = i / scene_h
+            r = int(8 + t*20)
+            g = int(10 + t*25)
+            b = int(15 + t*30)
+            pygame.draw.line(scene_surf, (r,g,b), (0,i), (scene_w, i))
+        # stars (slightly parallax)
+        for s in stars:
+            tw = 0.5 + 0.5 * math.sin(s["phase"]*2.0 + _color_cycle_t*3.0)
+            col = int(200 + 55*tw)
+            r = max(1, int(s["r"]*tw))
+            pygame.draw.circle(scene_surf, (col,col,255), (int(s["x"]*0.85), int(s["y"]*0.9)), r)
+            s["phase"] += 0.02
 
         for e in pygame.event.get():
             if e.type==pygame.QUIT:
@@ -228,7 +298,7 @@ def main():
                     elif e.key==pygame.K_DOWN:
                         drop_speed = BASE_DROP_SPEED
 
-        # DAS / ARR handling for smooth left/right hold
+        # DAS / ARR handling
         if use_keyboard:
             if left_held or right_held:
                 if hold_start is None:
@@ -242,7 +312,6 @@ def main():
                             piece.x += 1
                         last_arr = now
 
-            # handle held keys (only use for continuous fast-drop)
             keys = pygame.key.get_pressed()
             if keys[pygame.K_DOWN]:
                 drop_speed = 0.05
@@ -277,22 +346,35 @@ def main():
                                 grid[piece.y+y][piece.x+x]=piece.color
                 grid, cleared = clear_rows(grid)
                 if cleared:
-                    # create particles from cleared rows for visual flair
-                    # stronger confetti-like burst
-                    for _ in range(cleared * 18):
+                    # audio + combo
+                    play_clear_tone(cleared)
+                    if now - last_clear_time < 1.2:
+                        combo += 1
+                    else:
+                        combo = 1
+                    last_clear_time = now
+
+                    # screen shake proportional to clear and combo
+                    screen_shake = min(24.0, cleared*6 + combo*2)
+
+                    # particles + colorful confetti burst
+                    for _ in range(cleared * 20 + combo*6):
                         px = random.uniform(0, GRID_WIDTH*BLOCK_SIZE)
-                        py = random.uniform(0, SCREEN_HEIGHT)
-                        vx = random.uniform(-180, 180)
-                        vy = random.uniform(-220, -60)
-                        life = random.uniform(0.8, 1.6)
-                        size = random.choice([4,6,8])
+                        py = random.uniform(0, SCREEN_HEIGHT/2)
+                        vx = random.uniform(-240, 240)
+                        vy = random.uniform(-260, -80)
+                        life = random.uniform(0.9, 1.8)
+                        size = random.choice([3,4,6,8])
                         color = (random.randint(120,255), random.randint(80,255), random.randint(80,255))
                         particles.append({"x":px, "y":py, "vx":vx, "vy":vy, "life":life, "t":0, "color":color, "size":size})
 
-                    # floating score pop (centered)
-                    floating_texts.append({"x": SCREEN_WIDTH//2, "y": SCREEN_HEIGHT//2 - 20, "text": f"+{cleared*100}", "t": 0.0, "life": 1.0})
+                    # floating score pop with combo text
+                    pop_text = f"+{cleared*100}"
+                    if combo>1:
+                        pop_text += f"  x{combo}"
+                    floating_texts.append({"x": SCREEN_WIDTH//2, "y": SCREEN_HEIGHT//2 - 20, "text": pop_text, "t": 0.0, "life": 1.4})
 
-                score += cleared * 100
+                score += cleared * 100 * max(1, combo)
                 # spawn next piece
                 piece = spawn_piece(next_piece.index)
                 # immediately prepare subsequent next
@@ -300,7 +382,7 @@ def main():
                 next_piece = Piece(idx=next_idx)
                 # if new piece invalid at spawn -> game over
                 if not valid(piece, grid, 0, 0):
-                    # simple game over screen
+                    # simple game over screen (with shake freeze)
                     screen.fill((0,0,0))
                     screen.blit(big_font.render("GAME OVER", True, (255,50,50)), (SCREEN_WIDTH//2 - 120, SCREEN_HEIGHT//2 - 20))
                     screen.blit(font.render(f"Final Score: {score}", True, (255,255,255)), (SCREEN_WIDTH//2 - 80, SCREEN_HEIGHT//2 + 20))
@@ -309,51 +391,48 @@ def main():
                     running = False
             drop_timer=time.time()
 
-        # update particles
+        # update particles (draw into scene_surf)
         new_particles = []
         for p in particles:
-            dt = 1.0 / FPS
-            p["t"] += dt
-            p["x"] += p["vx"] * dt
-            p["y"] += p["vy"] * dt
-            p["vy"] += 420 * dt  # gravity stronger for punch
+            p["t"] += dt_frame
+            p["x"] += p["vx"] * dt_frame
+            p["y"] += p["vy"] * dt_frame
+            p["vy"] += 420 * dt_frame  # gravity
             if p["t"] < p["life"]:
                 alpha = int(255 * (1 - p["t"]/p["life"]))
                 col = p["color"]
                 size = p.get("size", 6)
                 surf = pygame.Surface((size, size), pygame.SRCALPHA)
                 surf.fill((col[0], col[1], col[2], alpha))
-                screen.blit(surf, (p["x"], p["y"]))
+                scene_surf.blit(surf, (p["x"], p["y"]))
                 new_particles.append(p)
         particles = new_particles
 
-        # floating text update & draw
+        # floating text update & draw (draw on scene)
         new_floats = []
         for ft in floating_texts:
-            ft["t"] += 1.0 / FPS
-            yoff = -40 * (ft["t"]/ft["life"])
+            ft["t"] += dt_frame
+            yoff = -60 * (ft["t"]/ft["life"])
             alpha = max(0, int(255 * (1 - ft["t"]/ft["life"])))
-            size = 22 + int(8 * (1 - ft["t"]/ft["life"]))
-            txt = font.render(ft["text"], True, (255, 220, 100))
+            txt = big_font.render(ft["text"], True, (255, 220, 100))
             txt.set_alpha(alpha)
-            screen.blit(txt, (ft["x"] - txt.get_width()//2, ft["y"] + yoff))
+            scene_surf.blit(txt, (ft["x"] - txt.get_width()//2, ft["y"] + yoff))
             if ft["t"] < ft["life"]:
                 new_floats.append(ft)
         floating_texts = new_floats
 
-        # draw grid and ghost (with glow)
+        # draw grid and pieces onto scene_surf (with glow)
         for y in range(GRID_HEIGHT):
             for x in range(GRID_WIDTH):
                 if grid[y][x]:
-                    # block with subtle glow
                     glow_surf = pygame.Surface((BLOCK_SIZE+6, BLOCK_SIZE+6), pygame.SRCALPHA)
                     col = grid[y][x]
                     glow_surf.fill((*col, 28))
-                    screen.blit(glow_surf, (x*BLOCK_SIZE-3, y*BLOCK_SIZE-3))
-                    pygame.draw.rect(screen,grid[y][x],(x*BLOCK_SIZE,y*BLOCK_SIZE,BLOCK_SIZE,BLOCK_SIZE))
-                pygame.draw.rect(screen,(40,40,60),(x*BLOCK_SIZE,y*BLOCK_SIZE,BLOCK_SIZE,BLOCK_SIZE),1)
+                    scene_surf.blit(glow_surf, (x*BLOCK_SIZE-3, y*BLOCK_SIZE-3))
+                    pygame.draw.rect(scene_surf,grid[y][x],(x*BLOCK_SIZE,y*BLOCK_SIZE,BLOCK_SIZE,BLOCK_SIZE))
+                pygame.draw.rect(scene_surf,(40,40,60),(x*BLOCK_SIZE,y*BLOCK_SIZE,BLOCK_SIZE,BLOCK_SIZE),1)
 
-        # draw ghost piece (semi-transparent)
+        # ghost + piece draw onto scene_surf
         ghost_color = (80,80,100)
         for y,row in enumerate(piece.shape):
             for x,cell in enumerate(row):
@@ -362,25 +441,35 @@ def main():
                     gy = (ghost_y + y) * BLOCK_SIZE
                     ghost_surf = pygame.Surface((BLOCK_SIZE, BLOCK_SIZE), pygame.SRCALPHA)
                     ghost_surf.fill((*ghost_color, 90))
-                    screen.blit(ghost_surf, (gx, gy))
-
-        # draw current piece with glow + outline
+                    scene_surf.blit(ghost_surf, (gx, gy))
         for y,row in enumerate(piece.shape):
             for x,cell in enumerate(row):
                 if cell:
                     bx = (piece.x+x)*BLOCK_SIZE
                     by = (piece.y+y)*BLOCK_SIZE
-                    # glow under block
                     glow = pygame.Surface((BLOCK_SIZE+8, BLOCK_SIZE+8), pygame.SRCALPHA)
                     glow.fill((*piece.color, 48))
-                    screen.blit(glow, (bx-4, by-4))
-                    # block
-                    pygame.draw.rect(screen,piece.color,(bx,by,BLOCK_SIZE,BLOCK_SIZE))
-                    pygame.draw.rect(screen,(255,255,255),(bx,by,BLOCK_SIZE,BLOCK_SIZE),1)
+                    scene_surf.blit(glow, (bx-4, by-4))
+                    pygame.draw.rect(scene_surf,piece.color,(bx,by,BLOCK_SIZE,BLOCK_SIZE))
+                    pygame.draw.rect(scene_surf,(255,255,255),(bx,by,BLOCK_SIZE,BLOCK_SIZE),1)
 
-        # advance small global timers for visuals
-        dt_frame = clock.get_time() / 1000.0
-        _color_cycle_t += dt_frame
+        # UI draws onto scene_surf panel area (reuse draw_ui but draw on scene then later blit; simpler: call draw_ui to draw onto screen after bloom)
+        # apply bloom onto a temporary surface and blit to screen with possible shake
+        screen.fill((0,0,0))
+        # create bloom effect by additive blit of blurred scene
+        bloom_blit(screen, scene_surf, strength=0.14)
+        # main scene
+        # compute shake offset and blit
+        if screen_shake > 0.05:
+            sx = int(random.uniform(-screen_shake, screen_shake))
+            sy = int(random.uniform(-screen_shake, screen_shake))
+            screen_shake = max(0.0, screen_shake - 40*dt_frame)
+        else:
+            sx = sy = 0
+            screen_shake = 0.0
+        screen.blit(scene_surf, (sx, sy))
+        # scanlines on grid area
+        screen.blit(scan_surf, (sx, sy), special_flags=pygame.BLEND_MULT)
 
         status = "Keyboard" if use_keyboard else ("Calibrating..." if not bci.calibrated else "EEG Active")
         draw_ui(score, status, next_piece)
