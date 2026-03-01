@@ -1,6 +1,7 @@
 import pygame
 import random
 import time
+import math
 from settings import *
 from bci_engine import BCIEngine
 
@@ -22,6 +23,15 @@ clock = pygame.time.Clock()
 
 font = pygame.font.SysFont("consolas", 20)
 big_font = pygame.font.SysFont("consolas", 28)
+
+# --- NEW: visual flair state (starfield, floating texts) ---
+stars = [
+    {"x": random.uniform(0, SCREEN_WIDTH), "y": random.uniform(0, SCREEN_HEIGHT),
+     "r": random.uniform(0.6, 2.6), "phase": random.uniform(0, math.pi*2)}
+    for _ in range(72)
+]
+floating_texts = []  # small transient score / combo pops
+_color_cycle_t = 0.0
 
 if not use_keyboard:
     bci = BCIEngine(debug=debug)
@@ -78,7 +88,17 @@ def draw_ui(score, status, next_piece):
     panel_x = GRID_WIDTH * BLOCK_SIZE + 10
     pygame.draw.rect(screen, (20,20,30), (GRID_WIDTH * BLOCK_SIZE, 0, 220, SCREEN_HEIGHT))
 
-    screen.blit(big_font.render("NeuroBlocks", True, (0,255,255)), (panel_x, 20))
+    # --- NEW: pulsing rainbow title ---
+    global _color_cycle_t
+    t = _color_cycle_t
+    hue = int((math.sin(t*1.8) * 0.5 + 0.5) * 255)
+    title_col = (hue, 255 - hue, 200)
+    pulse = 1.0 + 0.06 * math.sin(t * 6.0)
+    title_surf = big_font.render("NeuroBlocks", True, title_col)
+    ts_w, ts_h = title_surf.get_size()
+    title_surf = pygame.transform.smoothscale(title_surf, (int(ts_w*pulse), int(ts_h*pulse)))
+    screen.blit(title_surf, (panel_x, 20 - int((pulse-1.0)*10)))
+
     screen.blit(font.render(f"Score: {score}", True, (255,255,255)), (panel_x, 80))
     screen.blit(font.render(f"Mode: {status}", True, (180,180,255)), (panel_x, 120))
 
@@ -120,13 +140,25 @@ def clamp(v, a, b):
     return max(a, min(b, v))
 
 def draw_background():
-    # simple vertical gradient
+    # simple vertical gradient enhanced with animated stars
+    global _color_cycle_t
+    # base gradient
     for i in range(SCREEN_HEIGHT):
         t = i / SCREEN_HEIGHT
         r = int(8 + t*20)
         g = int(10 + t*25)
         b = int(15 + t*30)
         pygame.draw.line(screen, (r,g,b), (0,i), (GRID_WIDTH*BLOCK_SIZE, i))
+
+    # animated stars (twinkle)
+    for s in stars:
+        s["phase"] += 0.02
+        tw = 0.5 + 0.5 * math.sin(s["phase"]*2.0 + _color_cycle_t*3.0)
+        col = int(200 + 55*tw)
+        x = int(s["x"])
+        y = int(s["y"])
+        r = max(1, int(s["r"]*tw))
+        pygame.draw.circle(screen, (col,col,255), (x, y), r)
 
 def main():
     grid = [[0]*GRID_WIDTH for _ in range(GRID_HEIGHT)]
@@ -245,18 +277,19 @@ def main():
                 grid, cleared = clear_rows(grid)
                 if cleared:
                     # create particles from cleared rows for visual flair
-                    for ry in range(GRID_HEIGHT):
-                        # detect cleared rows by checking if any cell in row became 0 recently (approx)
-                        pass
-                    # create particles across the cleared lines area
-                    for _ in range(cleared * 12):
+                    # stronger confetti-like burst
+                    for _ in range(cleared * 18):
                         px = random.uniform(0, GRID_WIDTH*BLOCK_SIZE)
                         py = random.uniform(0, SCREEN_HEIGHT)
-                        vx = random.uniform(-60, 60)
-                        vy = random.uniform(-150, -50)
-                        life = random.uniform(0.6, 1.2)
-                        color = random.choice(COLORS)
-                        particles.append({"x":px, "y":py, "vx":vx, "vy":vy, "life":life, "t":0, "color":color})
+                        vx = random.uniform(-180, 180)
+                        vy = random.uniform(-220, -60)
+                        life = random.uniform(0.8, 1.6)
+                        size = random.choice([4,6,8])
+                        color = (random.randint(120,255), random.randint(80,255), random.randint(80,255))
+                        particles.append({"x":px, "y":py, "vx":vx, "vy":vy, "life":life, "t":0, "color":color, "size":size})
+
+                    # floating score pop (centered)
+                    floating_texts.append({"x": SCREEN_WIDTH//2, "y": SCREEN_HEIGHT//2 - 20, "text": f"+{cleared*100}", "t": 0.0, "life": 1.0})
 
                 score += cleared * 100
                 # spawn next piece
@@ -282,21 +315,40 @@ def main():
             p["t"] += dt
             p["x"] += p["vx"] * dt
             p["y"] += p["vy"] * dt
-            p["vy"] += 300 * dt  # gravity
+            p["vy"] += 420 * dt  # gravity stronger for punch
             if p["t"] < p["life"]:
                 alpha = int(255 * (1 - p["t"]/p["life"]))
                 col = p["color"]
-                # draw with fading
-                surf = pygame.Surface((6,6), pygame.SRCALPHA)
+                size = p.get("size", 6)
+                surf = pygame.Surface((size, size), pygame.SRCALPHA)
                 surf.fill((col[0], col[1], col[2], alpha))
                 screen.blit(surf, (p["x"], p["y"]))
                 new_particles.append(p)
         particles = new_particles
 
-        # draw grid and ghost
+        # floating text update & draw
+        new_floats = []
+        for ft in floating_texts:
+            ft["t"] += 1.0 / FPS
+            yoff = -40 * (ft["t"]/ft["life"])
+            alpha = max(0, int(255 * (1 - ft["t"]/ft["life"])))
+            size = 22 + int(8 * (1 - ft["t"]/ft["life"]))
+            txt = font.render(ft["text"], True, (255, 220, 100))
+            txt.set_alpha(alpha)
+            screen.blit(txt, (ft["x"] - txt.get_width()//2, ft["y"] + yoff))
+            if ft["t"] < ft["life"]:
+                new_floats.append(ft)
+        floating_texts = new_floats
+
+        # draw grid and ghost (with glow)
         for y in range(GRID_HEIGHT):
             for x in range(GRID_WIDTH):
                 if grid[y][x]:
+                    # block with subtle glow
+                    glow_surf = pygame.Surface((BLOCK_SIZE+6, BLOCK_SIZE+6), pygame.SRCALPHA)
+                    col = grid[y][x]
+                    glow_surf.fill((*col, 28))
+                    screen.blit(glow_surf, (x*BLOCK_SIZE-3, y*BLOCK_SIZE-3))
                     pygame.draw.rect(screen,grid[y][x],(x*BLOCK_SIZE,y*BLOCK_SIZE,BLOCK_SIZE,BLOCK_SIZE))
                 pygame.draw.rect(screen,(40,40,60),(x*BLOCK_SIZE,y*BLOCK_SIZE,BLOCK_SIZE,BLOCK_SIZE),1)
 
@@ -308,14 +360,26 @@ def main():
                     gx = (piece.x + x) * BLOCK_SIZE
                     gy = (ghost_y + y) * BLOCK_SIZE
                     ghost_surf = pygame.Surface((BLOCK_SIZE, BLOCK_SIZE), pygame.SRCALPHA)
-                    ghost_surf.fill((*ghost_color, 110))
+                    ghost_surf.fill((*ghost_color, 90))
                     screen.blit(ghost_surf, (gx, gy))
 
-        # draw current piece
+        # draw current piece with glow + outline
         for y,row in enumerate(piece.shape):
             for x,cell in enumerate(row):
                 if cell:
-                    pygame.draw.rect(screen,piece.color,( (piece.x+x)*BLOCK_SIZE,(piece.y+y)*BLOCK_SIZE,BLOCK_SIZE,BLOCK_SIZE))
+                    bx = (piece.x+x)*BLOCK_SIZE
+                    by = (piece.y+y)*BLOCK_SIZE
+                    # glow under block
+                    glow = pygame.Surface((BLOCK_SIZE+8, BLOCK_SIZE+8), pygame.SRCALPHA)
+                    glow.fill((*piece.color, 48))
+                    screen.blit(glow, (bx-4, by-4))
+                    # block
+                    pygame.draw.rect(screen,piece.color,(bx,by,BLOCK_SIZE,BLOCK_SIZE))
+                    pygame.draw.rect(screen,(255,255,255),(bx,by,BLOCK_SIZE,BLOCK_SIZE),1)
+
+        # advance small global timers for visuals
+        dt_frame = clock.get_time() / 1000.0
+        _color_cycle_t += dt_frame
 
         status = "Keyboard" if use_keyboard else ("Calibrating..." if not bci.calibrated else "EEG Active")
         draw_ui(score, status, next_piece)
