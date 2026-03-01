@@ -95,18 +95,26 @@ def main():
         for e in pygame.event.get():
             if e.type==pygame.QUIT:
                 running=False
+            elif e.type==pygame.KEYDOWN:
+                # handle single-action keys on keydown to avoid repeated rotations/moves
+                if use_keyboard:
+                    if e.key==pygame.K_LEFT and valid(piece,grid,-1,0):
+                        piece.x-=1
+                    elif e.key==pygame.K_RIGHT and valid(piece,grid,1,0):
+                        piece.x+=1
+                    elif e.key==pygame.K_UP:
+                        old=piece.shape
+                        piece.rotate()
+                        if not valid(piece,grid):
+                            piece.shape=old
+                    # allow immediate fast-drop on press; holding is handled below
+                    elif e.key==pygame.K_DOWN:
+                        drop_speed = 0.05
+                # keep EEG mode keydown handling empty (testing could be added)
 
+        # handle held keys (only use for continuous fast-drop)
         if use_keyboard:
             keys = pygame.key.get_pressed()
-            if keys[pygame.K_LEFT] and valid(piece,grid,-1,0):
-                piece.x-=1
-            if keys[pygame.K_RIGHT] and valid(piece,grid,1,0):
-                piece.x+=1
-            if keys[pygame.K_UP]:
-                old=piece.shape
-                piece.rotate()
-                if not valid(piece,grid):
-                    piece.shape=old
             if keys[pygame.K_DOWN]:
                 drop_speed = 0.05
             else:
