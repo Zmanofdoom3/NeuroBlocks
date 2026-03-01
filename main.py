@@ -210,10 +210,11 @@ def main():
     next_idx = random.randint(0, len(SHAPES)-1)
     next_piece = Piece(idx=next_idx)
 
-    # render-to-surface for bloom & shake
+    # render-to-surface for bloom & shake (use opaque surface to avoid alpha blending artifacts)
     scene_w = GRID_WIDTH * BLOCK_SIZE
     scene_h = SCREEN_HEIGHT
-    scene_surf = pygame.Surface((scene_w, scene_h)).convert_alpha()
+    scene_surf = pygame.Surface((scene_w, scene_h)).convert()
+    scene_surf.fill((0,0,0))
     scan_surf = make_scanlines(scene_w, scene_h, spacing=3)
 
     drop_timer = time.time()
@@ -454,12 +455,8 @@ def main():
                     pygame.draw.rect(scene_surf,(255,255,255),(bx,by,BLOCK_SIZE,BLOCK_SIZE),1)
 
         # UI draws onto scene_surf panel area (reuse draw_ui but draw on scene then later blit; simpler: call draw_ui to draw onto screen after bloom)
-        # apply bloom onto a temporary surface and blit to screen with possible shake
-        screen.fill((0,0,0))
-        # create bloom effect by additive blit of blurred scene
-        bloom_blit(screen, scene_surf, strength=0.14)
-        # main scene
-        # compute shake offset and blit
+        # draw main scene first, then bloom add-on, then scanlines (so bloom doesn't obscure the scene)
+        screen.fill((10,10,12))
         if screen_shake > 0.05:
             sx = int(random.uniform(-screen_shake, screen_shake))
             sy = int(random.uniform(-screen_shake, screen_shake))
@@ -468,7 +465,9 @@ def main():
             sx = sy = 0
             screen_shake = 0.0
         screen.blit(scene_surf, (sx, sy))
-        # scanlines on grid area
+        # additive bloom pass on top of the main scene
+        bloom_blit(screen, scene_surf, strength=0.14)
+        # scanlines only over the playfield
         screen.blit(scan_surf, (sx, sy), special_flags=pygame.BLEND_MULT)
 
         status = "Keyboard" if use_keyboard else ("Calibrating..." if not bci.calibrated else "EEG Active")
@@ -479,4 +478,11 @@ def main():
     pygame.quit()
 
 if __name__=="__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback, sys
+        traceback.print_exc()
+        # keep process alive briefly so you can read the terminal
+        print("Fatal error:", e, file=sys.stderr)
+        time.sleep(2)
