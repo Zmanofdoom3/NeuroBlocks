@@ -1,0 +1,4 @@
+pygame
+numpy
+pylsl
+bci-essentials
